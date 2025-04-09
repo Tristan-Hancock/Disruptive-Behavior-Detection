@@ -327,8 +327,18 @@ def main():
         return
 
     detector = StudentBehaviorDetector(attention_threshold=3, movement_threshold=0.05)
-    all_detections_log = []  # This will accumulate log entries for each detected face.
+    all_detections_log = []  # Accumulates log entries for each detected face.
     frame_counter = 0
+
+    # Initialize video recording.
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to read initial frame")
+        return
+    frame_height, frame_width = frame.shape[:2]
+    # Use 'mp4v' codec to save as MP4.
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter("recorded_feed.mp4", fourcc, 20.0, (frame_width, frame_height))
 
     while True:
         ret, frame = cap.read()
@@ -340,11 +350,14 @@ def main():
         processed_frame, state, frame_results = detector.process_frame(frame, frame_index=frame_counter)
         # Append current frame results to our log.
         all_detections_log.extend(frame_results)
+        # Write processed (annotated) frame to the video file.
+        out.write(processed_frame)
         cv2.imshow("Live Feed", processed_frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
+    out.release()
     cv2.destroyAllWindows()
 
     # Write the log entries to a CSV file.
