@@ -5,6 +5,7 @@ from collections import deque
 import mediapipe as mp
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+import csv  # For CSV logging
 
 class StudentBehaviorDetector:
     def __init__(self, attention_threshold=3, movement_threshold=0.05):
@@ -12,7 +13,7 @@ class StudentBehaviorDetector:
         Initialize the student behavior detector.
         
         Args:
-            attention_threshold (float): Time (in seconds) after which looking away is flagged.
+            attention_threshold (float): Time (in seconds) after which Not Paying Attention is flagged.
             movement_threshold (float): Normalized threshold for shoulder movement.
         """
         self.attention_threshold = attention_threshold
@@ -202,22 +203,25 @@ class StudentBehaviorDetector:
             self.current_state = "Student Paying Attention"
         return self.current_state
 
-    def process_frame(self, frame):
+    def process_frame(self, frame, frame_index=None):
         """
         Processes the frame: detects all faces, performs identity detection to determine
         if a person is Tristan, estimates gaze direction, checks shoulder movement,
         and evaluates facial expression for each detected face.
-        The frame is then annotated with the results.
+        Returns the annotated frame, an overall combined text, and a list of per-face results.
         """
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         # Detect all faces in the frame.
         face_detections = self.detect_faces(frame)
         if not face_detections:
             cv2.putText(frame, "No face detected", (30, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            return frame, "No face detected"
+            return frame, "No face detected", []
         
         combined_texts = []  # To store annotation information for each detected face.
-        for detection in face_detections:
+        face_results = []    # List to accumulate detailed results.
+        
+        for idx, detection in enumerate(face_detections):
             # Get the face bounding box.
             face_box = self.get_face_box(frame, detection)
             x, y, w, h = face_box
@@ -262,7 +266,7 @@ class StudentBehaviorDetector:
                 gaze_text = "Paying Attention"
                 self.last_gaze_time = time.time()
             else:
-                gaze_text = "Looking away"
+                gaze_text = "Not Paying Attention"
                 duration = time.time() - self.last_gaze_time
                 if duration >= self.attention_threshold:
                     gaze_text += " too long"
@@ -281,7 +285,7 @@ class StudentBehaviorDetector:
             cv2.putText(frame, expression_text, (x, y + h + 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 255), 2)
             
-            # Update overall behavior state (using the current face's gaze and movement info).
+            # Update overall behavior state.
             current_time = time.time()
             is_attentive = abs(norm_dx) < 0.1
             has_moved = moving
@@ -292,30 +296,69 @@ class StudentBehaviorDetector:
                          f"Movement: {movement_text}, Expr: {expression_text}")
             combined_texts.append(face_text)
             
-            # Optionally, you may draw this combined text near the face.
+            # Optionally, draw this combined text near the face.
             cv2.putText(frame, face_text, (30, y + h + 90),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            # Record results for this face.
+            result = {
+                "timestamp": timestamp,
+                "frame": frame_index if frame_index is not None else "",
+                "face_index": idx,
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "identity": identity_text,
+                "gaze": gaze_text,
+                "movement": movement_text,
+                "expression": expression_text,
+                "overall_state": self.current_state
+            }
+            face_results.append(result)
         
         overall_text = " | ".join(combined_texts)
-        return frame, overall_text
+        return frame, overall_text, face_results
 
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Cannot open camera")
         return
+
     detector = StudentBehaviorDetector(attention_threshold=3, movement_threshold=0.05)
+    all_detections_log = []  # This will accumulate log entries for each detected face.
+    frame_counter = 0
+
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Can't receive frame (stream end?). Exiting ...")
             break
-        processed_frame, state = detector.process_frame(frame)
+
+        frame_counter += 1
+        processed_frame, state, frame_results = detector.process_frame(frame, frame_index=frame_counter)
+        # Append current frame results to our log.
+        all_detections_log.extend(frame_results)
         cv2.imshow("Live Feed", processed_frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
     cap.release()
     cv2.destroyAllWindows()
+
+    # Write the log entries to a CSV file.
+    csv_filename = "detections_log.csv"
+    fieldnames = ["timestamp", "frame", "face_index", "x", "y", "w", "h", "identity", "gaze", "movement", "expression", "overall_state"]
+    try:
+        with open(csv_filename, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for entry in all_detections_log:
+                writer.writerow(entry)
+        print(f"Detection log saved to '{csv_filename}'.")
+    except Exception as e:
+        print("Error writing CSV file:", e)
 
 if __name__ == "__main__":
     main()
