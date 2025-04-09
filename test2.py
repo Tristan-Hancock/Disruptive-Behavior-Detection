@@ -3,6 +3,8 @@ import numpy as np
 import time
 from collections import deque
 import mediapipe as mp
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 
 class StudentBehaviorDetector:
     def __init__(self, attention_threshold=3, movement_threshold=0.05):
@@ -38,6 +40,11 @@ class StudentBehaviorDetector:
 
         self.mp_drawing = mp.solutions.drawing_utils
 
+        # Load the identity detection model (trained to recognize Tristan)
+        self.identity_model = load_model("models/final_model.h5")
+        # Adjust threshold based on your model's performance – here we use 0.9:
+        self.identity_threshold = 0.9
+
         # Initialize state tracking variables.
         self.last_shoulder_midpoint = None
         self.current_state = "attentive"
@@ -46,6 +53,7 @@ class StudentBehaviorDetector:
         self.distraction_start_time = None
         self.total_distraction_time = 0
         self.last_frame_time = None
+
         # Tracker (for potential future use).
         self.target_tracker = cv2.TrackerKCF_create()
         self.tracking_initialized = False
@@ -53,6 +61,18 @@ class StudentBehaviorDetector:
         self.face_detection_interval = 30
         self.frame_count = 0
         self.last_gaze_time = time.time()
+
+    def preprocess_face(self, face, target_size=(224, 224)):
+        """
+        Preprocess the input face image for identity detection.
+        Resizes to the target size, converts to RGB, normalizes pixel values,
+        and expands dimensions.
+        """
+        face = cv2.resize(face, target_size)
+        face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+        face = face.astype('float32') / 255.0
+        face = np.expand_dims(face, axis=0)
+        return face
 
     def detect_face(self, frame):
         """Detect the first face in the frame using MediaPipe Face Detection."""
@@ -63,7 +83,7 @@ class StudentBehaviorDetector:
         return None
 
     def get_face_box(self, frame, detection):
-        """Converts the MediaPipe detection to a bounding box (x, y, w, h) in pixel coordinates."""
+        """Convert the MediaPipe detection into pixel coordinates (x, y, w, h)."""
         ih, iw, _ = frame.shape
         bbox = detection.location_data.relative_bounding_box
         x = int(bbox.xmin * iw)
@@ -74,8 +94,8 @@ class StudentBehaviorDetector:
 
     def detect_gaze_direction(self, frame, face_box):
         """
-        Estimates gaze direction by computing the normalized horizontal 
-        displacement of the nose tip relative to the center of the eye line.
+        Estimate gaze direction by computing the normalized horizontal 
+        displacement of the nose tip relative to the center between the eyes.
         """
         x, y, w, h = face_box
         face_roi = frame[y:y+h, x:x+w]
@@ -97,8 +117,7 @@ class StudentBehaviorDetector:
     def detect_shoulder_movement(self, frame):
         """
         Uses MediaPipe Pose to compute the midpoint of the shoulders.
-        Returns True if movement exceeds the threshold. Wrapped in try/except
-        to avoid crashes.
+        Returns True if movement exceeds the threshold.
         """
         try:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -127,11 +146,8 @@ class StudentBehaviorDetector:
 
     def detect_expression(self, frame, face_box):
         """
-        Detects a facial expression (e.g. laughing or smiling) by computing the
-        Mouth Aspect Ratio (MAR) from mouth landmarks.
-        
-        Returns:
-            mar (float): Mouth aspect ratio. A higher value may indicate laughing.
+        Detect a facial expression (e.g. laughing or smiling) by computing the
+        Mouth Aspect Ratio (MAR) using mouth landmarks.
         """
         x, y, w, h = face_box
         face_roi = frame[y:y+h, x:x+w]
@@ -180,9 +196,9 @@ class StudentBehaviorDetector:
 
     def process_frame(self, frame):
         """
-        Processes the frame: detects face, estimates gaze direction,
-        checks shoulder movement, and evaluates facial expression.
-        Annotates the frame with bounding boxes and text.
+        Processes the frame: detects face, performs identity detection to determine
+        if the person is Tristan, estimates gaze direction, checks shoulder movement,
+        and evaluates facial expression. The frame is then annotated with the results.
         """
         face_detection = self.detect_face(frame)
         if face_detection is None:
@@ -190,10 +206,27 @@ class StudentBehaviorDetector:
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             return frame, "No face detected"
         
+        # Get the face bounding box.
         face_box = self.get_face_box(frame, face_detection)
         cv2.rectangle(frame, (face_box[0], face_box[1]), 
                       (face_box[0] + face_box[2], face_box[1] + face_box[3]), 
                       (0, 255, 0), 2)
+        
+        # Perform identity detection:
+        # Extract the face ROI and preprocess it for the identity model.
+        face_img = frame[face_box[1]:face_box[1]+face_box[3],
+                         face_box[0]:face_box[0]+face_box[2]]
+        face_preprocessed = self.preprocess_face(face_img)
+        prediction = self.identity_model.predict(face_preprocessed)
+        prob = prediction[0][0]
+        if prob > self.identity_threshold:
+            identity_text = "Tristan"
+            id_color = (0, 255, 0)
+        else:
+            identity_text = "Unknown"
+            id_color = (0, 0, 255)
+        cv2.putText(frame, identity_text, (face_box[0], face_box[1]-40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, id_color, 2)
         
         # Gaze detection.
         norm_dx = self.detect_gaze_direction(frame, face_box)
@@ -228,7 +261,7 @@ class StudentBehaviorDetector:
         is_attentive = abs(norm_dx) < 0.1
         has_moved = moving
         state = self.update_behavior_state(is_attentive, has_moved, current_time)
-        combined_text = f"Gaze: {gaze_text}, Movement: {movement_text}, Expr: {expression_text}"
+        combined_text = f"Identity: {identity_text}, Gaze: {gaze_text}, Movement: {movement_text}, Expr: {expression_text}"
         cv2.putText(frame, combined_text, (30, face_box[1] + face_box[3] + 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         return frame, combined_text
