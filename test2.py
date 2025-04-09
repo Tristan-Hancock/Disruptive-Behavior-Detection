@@ -8,7 +8,7 @@ class StudentBehaviorDetector:
     def __init__(self, attention_threshold=3, movement_threshold=0.05):
         """
         Initialize the student behavior detector.
-
+        
         Args:
             attention_threshold (float): Time (in seconds) after which looking away is flagged.
             movement_threshold (float): Normalized threshold for shoulder movement.
@@ -46,7 +46,7 @@ class StudentBehaviorDetector:
         self.distraction_start_time = None
         self.total_distraction_time = 0
         self.last_frame_time = None
-        # We use a tracker if needed (here it's available for future extension).
+        # Tracker (for potential future use).
         self.target_tracker = cv2.TrackerKCF_create()
         self.tracking_initialized = False
         self.tracking_box = None
@@ -63,7 +63,7 @@ class StudentBehaviorDetector:
         return None
 
     def get_face_box(self, frame, detection):
-        """Convert the MediaPipe detection to a bounding box (x, y, w, h) in pixel coordinates."""
+        """Converts the MediaPipe detection to a bounding box (x, y, w, h) in pixel coordinates."""
         ih, iw, _ = frame.shape
         bbox = detection.location_data.relative_bounding_box
         x = int(bbox.xmin * iw)
@@ -74,7 +74,7 @@ class StudentBehaviorDetector:
 
     def detect_gaze_direction(self, frame, face_box):
         """
-        Estimate the gaze direction by computing the normalized horizontal 
+        Estimates gaze direction by computing the normalized horizontal 
         displacement of the nose tip relative to the center of the eye line.
         """
         x, y, w, h = face_box
@@ -97,36 +97,41 @@ class StudentBehaviorDetector:
     def detect_shoulder_movement(self, frame):
         """
         Uses MediaPipe Pose to compute the midpoint of the shoulders.
-        Returns True if the movement exceeds a set threshold.
+        Returns True if movement exceeds the threshold. Wrapped in try/except
+        to avoid crashes.
         """
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(frame_rgb)
-        if results.pose_landmarks:
-            landmarks = results.pose_landmarks.landmark
-            left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
-            right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
-            ih, iw, _ = frame.shape
-            midpoint_norm = ((left_shoulder.x + right_shoulder.x) / 2.0,
-                             (left_shoulder.y + right_shoulder.y) / 2.0)
-            midpoint = (midpoint_norm[0] * iw, midpoint_norm[1] * ih)
-            if self.last_shoulder_midpoint is not None:
-                dx = midpoint[0] - self.last_shoulder_midpoint[0]
-                dy = midpoint[1] - self.last_shoulder_midpoint[1]
-                dist = np.sqrt(dx ** 2 + dy ** 2)
-                self.last_shoulder_midpoint = midpoint
-                if dist > self.movement_threshold * iw:
-                    return True
-            else:
-                self.last_shoulder_midpoint = midpoint
+        try:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = self.pose.process(frame_rgb)
+            if results.pose_landmarks:
+                landmarks = results.pose_landmarks.landmark
+                left_shoulder = landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+                right_shoulder = landmarks[self.mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+                ih, iw, _ = frame.shape
+                midpoint_norm = ((left_shoulder.x + right_shoulder.x) / 2.0,
+                                 (left_shoulder.y + right_shoulder.y) / 2.0)
+                midpoint = (midpoint_norm[0] * iw, midpoint_norm[1] * ih)
+                if self.last_shoulder_midpoint is not None:
+                    dx = midpoint[0] - self.last_shoulder_midpoint[0]
+                    dy = midpoint[1] - self.last_shoulder_midpoint[1]
+                    dist = np.sqrt(dx ** 2 + dy ** 2)
+                    self.last_shoulder_midpoint = midpoint
+                    if dist > self.movement_threshold * iw:
+                        return True
+                else:
+                    self.last_shoulder_midpoint = midpoint
+        except Exception as e:
+            print("Error in detect_shoulder_movement:", e)
+            return False
         return False
 
     def detect_expression(self, frame, face_box):
         """
         Detects a facial expression (e.g. laughing or smiling) by computing the
-        Mouth Aspect Ratio (MAR) using specific mouth landmarks from the face mesh.
+        Mouth Aspect Ratio (MAR) from mouth landmarks.
         
         Returns:
-            mar (float): The mouth aspect ratio, where a higher value may indicate laughing.
+            mar (float): Mouth aspect ratio. A higher value may indicate laughing.
         """
         x, y, w, h = face_box
         face_roi = frame[y:y+h, x:x+w]
@@ -177,7 +182,7 @@ class StudentBehaviorDetector:
         """
         Processes the frame: detects face, estimates gaze direction,
         checks shoulder movement, and evaluates facial expression.
-        Draws the bounding box and annotates the frame with the relevant info.
+        Annotates the frame with bounding boxes and text.
         """
         face_detection = self.detect_face(frame)
         if face_detection is None:
